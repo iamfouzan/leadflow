@@ -1,0 +1,1857 @@
+---
+alwaysApply: true
+---
+# FastAPI Service Marketplace Backend - Cursor Rules
+
+## Project Context
+You are working on a **Service Marketplace Platform** backend built with FastAPI. This system connects Potential Customers seeking services with Business Owners providing those services. The platform includes real-time chat, lead management, search/matching algorithms, and dual-app support (Customer App & Business Owner App).
+
+## Core Technology Stack
+- **Framework**: FastAPI 0.104+
+- **Language**: Python 3.11+
+- **Database**: PostgreSQL 15+ with SQLAlchemy 2.0+
+- **ORM**: SQLAlchemy (async where beneficial)
+- **Migrations**: Alembic
+- **Caching**: Redis
+- **APIs**: REST API (primary) + GraphQL (Strawberry) for complex queries
+- **Authentication**: JWT (access + refresh tokens)
+- **Validation**: Pydantic v2
+- **Testing**: Pytest with async support
+
+---
+
+## Architecture Principles
+
+### 1. Layered Architecture (Mandatory)
+Follow strict separation of concerns:
+
+```
+API Layer (Routes/Controllers)
+    ↓
+Service Layer (Business Logic)
+    ↓
+Repository Layer (Data Access)
+    ↓
+Model Layer (Database Models)
+```
+
+**Rules**:
+- ✅ API endpoints ONLY handle HTTP concerns (request/response, validation, status codes)
+- ✅ Services contain ALL business logic (no business logic in routes)
+- ✅ Repositories handle ALL database operations (no raw queries in services)
+- ✅ Models define database schema ONLY (no business logic)
+- ❌ NEVER skip layers (e.g., routes calling repositories directly)
+- ❌ NEVER put business logic in models or repositories
+
+### 2. Dependency Injection Pattern
+Use FastAPI's dependency injection system extensively:
+
+```python
+# CORRECT: Use dependencies
+@router.get("/users/me")
+async def get_current_user(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    return current_user
+
+# WRONG: Global state or direct instantiation
+@router.get("/users/me")
+async def get_current_user():
+    db = SessionLocal()  # ❌ Don't do this
+    user = db.query(User).first()  # ❌ Don't query directly in routes
+```
+
+### 3. Repository Pattern (Mandatory)
+All database operations MUST go through repositories:
+
+```python
+# ✅ CORRECT: Repository with generic base
+class BaseRepository(Generic[T]):
+    def __init__(self, model: Type[T], db: Session):
+        self.model = model
+        self.db = db
+    
+    async def get_by_id(self, id: int) -> Optional[T]:
+        return self.db.query(self.model).filter(self.model.id == id).first()
+    
+    async def create(self, obj_in: dict) -> T:
+        db_obj = self.model(**obj_in)
+        self.db.add(db_obj)
+        self.db.commit()
+        self.db.refresh(db_obj)
+        return db_obj
+
+class UserRepository(BaseRepository[User]):
+    async def get_by_email(self, email: str) -> Optional[User]:
+        return self.db.query(User).filter(User.email == email).first()
+
+# ❌ WRONG: Direct database queries in services
+class AuthService:
+    def login(self, email: str):
+        user = db.query(User).filter(User.email == email).first()  # ❌
+```
+
+---
+
+## Code Style & Standards
+
+### 1. Type Hints (Mandatory)
+ALWAYS use complete type hints:
+
+```python
+# ✅ CORRECT
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+
+async def get_user_by_id(
+    user_id: int,
+    db: Session,
+    include_deleted: bool = False
+) -> Optional[User]:
+    pass
+
+def process_data(data: List[Dict[str, Any]]) -> Dict[str, int]:
+    pass
+
+# ❌ WRONG: Missing type hints
+async def get_user_by_id(user_id, db):  # ❌
+    pass
+```
+
+### 2. Pydantic Schemas (Strict)
+Use Pydantic models for ALL request/response validation:
+
+```python
+# ✅ CORRECT: Comprehensive schemas
+from pydantic import BaseModel, EmailStr, Field, validator
+from datetime import datetime
+from typing import Optional
+
+class UserBase(BaseModel):
+    email: EmailStr
+    full_name: str = Field(..., min_length=1, max_length=100)
+
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=8)
+    user_type: UserType
+    
+    @validator('password')
+    def validate_password(cls, v):
+        if not any(char.isdigit() for char in v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+class UserResponse(UserBase):
+    id: int
+    user_type: UserType
+    status: UserStatus
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True  # Pydantic v2
+
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    phone: Optional[str] = None
+
+# ❌ WRONG: Using plain dicts or incomplete validation
+@router.post("/users")
+async def create_user(data: dict):  # ❌ Never use dict
+    pass
+```
+
+### 3. Error Handling (Comprehensive)
+Create custom exceptions and handle them globally:
+
+```python
+# ✅ CORRECT: Custom exceptions
+from fastapi import HTTPException, status
+
+class AppException(Exception):
+    """Base exception for application"""
+    pass
+
+class ResourceNotFoundException(AppException):
+    """Raised when resource is not found"""
+    def __init__(self, resource: str, id: Any):
+        self.message = f"{resource} with id {id} not found"
+        super().__init__(self.message)
+
+class UnauthorizedException(AppException):
+    """Raised when user is not authorized"""
+    pass
+
+class ValidationException(AppException):
+    """Raised when validation fails"""
+    pass
+
+# Global exception handlers
+@app.exception_handler(ResourceNotFoundException)
+async def resource_not_found_handler(request: Request, exc: ResourceNotFoundException):
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={
+            "success": False,
+            "error": {
+                "code": "RESOURCE_NOT_FOUND",
+                "message": exc.message
+            }
+        }
+    )
+
+# In services/routes
+async def get_user(user_id: int, db: Session) -> User:
+    user = await user_repository.get_by_id(user_id)
+    if not user:
+        raise ResourceNotFoundException("User", user_id)
+    return user
+
+# ❌ WRONG: Generic HTTPException everywhere
+if not user:
+    raise HTTPException(status_code=404, detail="Not found")  # ❌ Too generic
+```
+
+### 4. Response Format (Standardized)
+Use consistent response structure across ALL endpoints:
+
+```python
+# ✅ CORRECT: Standard response wrapper
+from typing import TypeVar, Generic, Optional
+from pydantic import BaseModel
+
+T = TypeVar('T')
+
+class SuccessResponse(BaseModel, Generic[T]):
+    success: bool = True
+    data: T
+    message: Optional[str] = None
+
+class ErrorResponse(BaseModel):
+    success: bool = False
+    error: dict  # {"code": "ERROR_CODE", "message": "Error message"}
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    success: bool = True
+    data: List[T]
+    pagination: dict  # {"page": 1, "page_size": 10, "total": 100, "total_pages": 10}
+
+# Usage in routes
+@router.get("/users/{user_id}", response_model=SuccessResponse[UserResponse])
+async def get_user(user_id: int):
+    user = await user_service.get_by_id(user_id)
+    return SuccessResponse(data=user, message="User retrieved successfully")
+
+# ❌ WRONG: Inconsistent responses
+@router.get("/users/{user_id}")
+async def get_user(user_id: int):
+    return {"user": user}  # ❌ Inconsistent structure
+
+@router.get("/businesses")
+async def get_businesses():
+    return businesses  # ❌ No wrapper
+```
+
+---
+
+## Security Best Practices
+
+### 1. Authentication & Authorization
+```python
+# ✅ CORRECT: Proper JWT dependency chain
+from jose import JWTError, jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id: int = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = await user_repository.get_by_id(user_id)
+    if user is None or user.status != UserStatus.ACTIVE:
+        raise credentials_exception
+    return user
+
+async def get_current_active_customer(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    if current_user.user_type != UserType.CUSTOMER:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return current_user
+
+async def get_current_active_business(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    if current_user.user_type != UserType.BUSINESS_OWNER:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return current_user
+
+# Usage
+@router.get("/customers/me")
+async def get_my_profile(
+    current_user: User = Depends(get_current_active_customer)
+):
+    return SuccessResponse(data=current_user)
+```
+
+### 2. Password Handling
+```python
+# ✅ CORRECT: Use passlib
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+# ❌ WRONG: Never store plain passwords or use weak hashing
+password = user.password  # ❌ Never store plain
+hashed = hashlib.md5(password.encode()).hexdigest()  # ❌ MD5 is not secure
+```
+
+### 3. Input Sanitization
+```python
+# ✅ CORRECT: Validate and sanitize all inputs
+from pydantic import validator, Field
+import re
+
+class BusinessCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=200)
+    email: EmailStr
+    phone: str
+    
+    @validator('name')
+    def sanitize_name(cls, v):
+        # Remove any HTML tags
+        v = re.sub(r'<[^>]+>', '', v)
+        # Remove extra whitespace
+        v = ' '.join(v.split())
+        return v
+    
+    @validator('phone')
+    def validate_phone(cls, v):
+        # Remove all non-digit characters
+        cleaned = re.sub(r'\D', '', v)
+        if len(cleaned) < 10:
+            raise ValueError('Phone number must have at least 10 digits')
+        return cleaned
+
+# ❌ WRONG: Accepting raw input without validation
+@router.post("/businesses")
+async def create_business(name: str, email: str):  # ❌ No validation
+    # Direct database insertion ❌
+```
+
+---
+
+## Database Patterns
+
+### 1. SQLAlchemy Models
+```python
+# ✅ CORRECT: Complete model with relationships
+from sqlalchemy import Column, Integer, String, DateTime, Enum, ForeignKey, Boolean
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from app.db.base import Base
+import enum
+
+class UserType(str, enum.Enum):
+    CUSTOMER = "CUSTOMER"
+    BUSINESS_OWNER = "BUSINESS_OWNER"
+
+class UserStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    SUSPENDED = "SUSPENDED"
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    full_name = Column(String(100), nullable=False)
+    phone = Column(String(20), unique=True, index=True, nullable=True)
+    user_type = Column(Enum(UserType), nullable=False, index=True)
+    status = Column(Enum(UserStatus), default=UserStatus.PENDING, nullable=False)
+    is_verified = Column(Boolean, default=False, nullable=False)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    last_login = Column(DateTime(timezone=True), nullable=True)
+    
+    # Relationships
+    customer_profile = relationship("Customer", back_populates="user", uselist=False)
+    business_profile = relationship("Business", back_populates="user", uselist=False)
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<User {self.email}>"
+
+class Customer(Base):
+    __tablename__ = "customers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    
+    # Additional customer-specific fields
+    preferred_radius = Column(Integer, default=10)  # in miles
+    
+    # Relationships
+    user = relationship("User", back_populates="customer_profile")
+    searches = relationship("SearchHistory", back_populates="customer", cascade="all, delete-orphan")
+    conversations = relationship("Conversation", foreign_keys="[Conversation.customer_id]", back_populates="customer")
+```
+
+### 2. Migrations with Alembic
+```python
+# ✅ CORRECT: Clear migration with up/down
+"""Add user status field
+
+Revision ID: abc123
+Revises: def456
+Create Date: 2025-01-15 10:30:00.000000
+"""
+from alembic import op
+import sqlalchemy as sa
+
+def upgrade():
+    # Add new column
+    op.add_column('users', sa.Column('status', sa.String(20), nullable=True))
+    
+    # Update existing rows
+    op.execute("UPDATE users SET status = 'ACTIVE' WHERE is_verified = true")
+    op.execute("UPDATE users SET status = 'PENDING' WHERE is_verified = false")
+    
+    # Make column non-nullable
+    op.alter_column('users', 'status', nullable=False)
+    
+    # Add index
+    op.create_index('idx_users_status', 'users', ['status'])
+
+def downgrade():
+    op.drop_index('idx_users_status', 'users')
+    op.drop_column('users', 'status')
+```
+
+### 3. Query Optimization
+```python
+# ✅ CORRECT: Efficient queries with eager loading
+from sqlalchemy.orm import joinedload, selectinload
+
+class BusinessRepository(BaseRepository[Business]):
+    async def get_with_reviews(self, business_id: int) -> Optional[Business]:
+        return (
+            self.db.query(Business)
+            .options(
+                joinedload(Business.user),
+                selectinload(Business.reviews).joinedload(Review.customer),
+                selectinload(Business.services)
+            )
+            .filter(Business.id == business_id)
+            .first()
+        )
+    
+    async def search_businesses(
+        self,
+        keyword: str,
+        lat: float,
+        lng: float,
+        radius: int,
+        limit: int = 10
+    ) -> List[Business]:
+        # Use spatial query with PostGIS
+        query = self.db.query(Business).filter(
+            Business.status == "ACTIVE",
+            func.ST_DWithin(
+                Business.location,
+                func.ST_SetSRID(func.ST_MakePoint(lng, lat), 4326),
+                radius * 1609.34  # Convert miles to meters
+            )
+        )
+        
+        # Add keyword search
+        if keyword:
+            query = query.filter(
+                or_(
+                    Business.name.ilike(f"%{keyword}%"),
+                    Business.description.ilike(f"%{keyword}%"),
+                    Business.services.any(Service.name.ilike(f"%{keyword}%"))
+                )
+            )
+        
+        # Order by rating and distance
+        query = query.order_by(
+            Business.rating.desc(),
+            func.ST_Distance(
+                Business.location,
+                func.ST_SetSRID(func.ST_MakePoint(lng, lat), 4326)
+            )
+        )
+        
+        return query.limit(limit).all()
+
+# ❌ WRONG: N+1 queries
+businesses = db.query(Business).all()
+for business in businesses:
+    reviews = business.reviews  # ❌ Separate query for each business
+```
+
+---
+
+## API Design Patterns
+
+### 1. RESTful Routes (Use for Simple Operations)
+```python
+# ✅ CORRECT: RESTful structure with proper verbs
+from fastapi import APIRouter, status
+
+router = APIRouter(prefix="/api/v1/customers", tags=["customers"])
+
+@router.post("", response_model=SuccessResponse[CustomerResponse], status_code=status.HTTP_201_CREATED)
+async def create_customer(
+    customer_in: CustomerCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new customer account"""
+    customer = await customer_service.create(db, customer_in)
+    return SuccessResponse(data=customer, message="Customer created successfully")
+
+@router.get("/{customer_id}", response_model=SuccessResponse[CustomerResponse])
+async def get_customer(
+    customer_id: int,
+    current_user: User = Depends(get_current_active_customer),
+    db: Session = Depends(get_db)
+):
+    """Get customer by ID"""
+    # Ensure user can only access their own data
+    if current_user.customer_profile.id != customer_id:
+        raise UnauthorizedException("Cannot access other customer's data")
+    
+    customer = await customer_service.get_by_id(db, customer_id)
+    return SuccessResponse(data=customer)
+
+@router.put("/{customer_id}", response_model=SuccessResponse[CustomerResponse])
+async def update_customer(
+    customer_id: int,
+    customer_in: CustomerUpdate,
+    current_user: User = Depends(get_current_active_customer),
+    db: Session = Depends(get_db)
+):
+    """Update customer profile"""
+    if current_user.customer_profile.id != customer_id:
+        raise UnauthorizedException("Cannot update other customer's data")
+    
+    customer = await customer_service.update(db, customer_id, customer_in)
+    return SuccessResponse(data=customer, message="Customer updated successfully")
+
+@router.delete("/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_customer(
+    customer_id: int,
+    current_user: User = Depends(get_current_active_customer),
+    db: Session = Depends(get_db)
+):
+    """Soft delete customer account"""
+    if current_user.customer_profile.id != customer_id:
+        raise UnauthorizedException("Cannot delete other customer's data")
+    
+    await customer_service.soft_delete(db, customer_id)
+```
+
+### 2. GraphQL Queries (Use for Complex Data Fetching)
+```python
+# ✅ CORRECT: GraphQL for nested, flexible queries
+import strawberry
+from typing import Optional, List
+from datetime import datetime
+
+@strawberry.type
+class ServiceType:
+    id: int
+    name: str
+    description: Optional[str]
+    price_range: Optional[str]
+
+@strawberry.type
+class ReviewType:
+    id: int
+    rating: int
+    comment: Optional[str]
+    created_at: datetime
+    customer_name: str
+
+@strawberry.type
+class BusinessType:
+    id: int
+    name: str
+    email: str
+    phone: str
+    description: Optional[str]
+    address: str
+    city: str
+    state: str
+    rating: float
+    review_count: int
+    distance: Optional[float]  # Calculated field
+    
+    @strawberry.field
+    async def services(self, info) -> List[ServiceType]:
+        # Resolve services relationship
+        return await service_repository.get_by_business_id(self.id)
+    
+    @strawberry.field
+    async def reviews(
+        self,
+        info,
+        limit: int = 10,
+        offset: int = 0
+    ) -> List[ReviewType]:
+        # Resolve reviews with pagination
+        return await review_repository.get_by_business_id(
+            self.id,
+            limit=limit,
+            offset=offset
+        )
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    async def search_businesses(
+        self,
+        info,
+        keyword: str,
+        latitude: float,
+        longitude: float,
+        radius: int = 10,
+        limit: int = 10
+    ) -> List[BusinessType]:
+        """Search businesses by location and keyword"""
+        # Get database session from context
+        db = info.context["db"]
+        
+        businesses = await business_service.search(
+            db=db,
+            keyword=keyword,
+            lat=latitude,
+            lng=longitude,
+            radius=radius,
+            limit=limit
+        )
+        
+        return businesses
+    
+    @strawberry.field
+    async def business(
+        self,
+        info,
+        business_id: int
+    ) -> Optional[BusinessType]:
+        """Get single business with all details"""
+        db = info.context["db"]
+        return await business_service.get_by_id(db, business_id)
+
+# Schema setup
+schema = strawberry.Schema(query=Query)
+```
+
+### 3. Pagination Pattern
+```python
+# ✅ CORRECT: Cursor-based pagination for consistency
+from typing import Generic, TypeVar, List, Optional
+from pydantic import BaseModel
+
+T = TypeVar('T')
+
+class PaginationParams(BaseModel):
+    page: int = Field(1, ge=1)
+    page_size: int = Field(10, ge=1, le=100)
+
+class PaginatedData(BaseModel, Generic[T]):
+    items: List[T]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_next: bool
+    has_prev: bool
+
+async def paginate(
+    query: Query,
+    params: PaginationParams
+) -> PaginatedData[T]:
+    total = query.count()
+    total_pages = (total + params.page_size - 1) // params.page_size
+    
+    offset = (params.page - 1) * params.page_size
+    items = query.offset(offset).limit(params.page_size).all()
+    
+    return PaginatedData(
+        items=items,
+        total=total,
+        page=params.page,
+        page_size=params.page_size,
+        total_pages=total_pages,
+        has_next=params.page < total_pages,
+        has_prev=params.page > 1
+    )
+
+# Usage
+@router.get("/businesses", response_model=PaginatedResponse[BusinessResponse])
+async def list_businesses(
+    pagination: PaginationParams = Depends(),
+    db: Session = Depends(get_db)
+):
+    query = db.query(Business).filter(Business.status == "ACTIVE")
+    paginated = await paginate(query, pagination)
+    
+    return PaginatedResponse(
+        success=True,
+        data=paginated.items,
+        pagination={
+            "page": paginated.page,
+            "page_size": paginated.page_size,
+            "total": paginated.total,
+            "total_pages": paginated.total_pages,
+            "has_next": paginated.has_next,
+            "has_prev": paginated.has_prev
+        }
+    )
+```
+
+---
+
+## Environment Configuration
+
+### 1. Settings Management
+```python
+# ✅ CORRECT: Pydantic Settings with validation
+from pydantic_settings import BaseSettings
+from typing import List, Optional
+from functools import lru_cache
+
+class Settings(BaseSettings):
+    # Application
+    ENVIRONMENT: str = "local"  # local, staging, production
+    APP_NAME: str = "Service Marketplace API"
+    DEBUG: bool = True
+    API_V1_PREFIX: str = "/api/v1"
+    
+    # Database
+    DATABASE_URL: str
+    DB_ECHO: bool = True
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    
+    # Redis
+    REDIS_URL: str
+    REDIS_OTP_DB: int = 1
+    
+    # JWT
+    SECRET_KEY: str
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    
+    # OTP
+    OTP_LENGTH: int = 6
+    OTP_EXPIRY_MINUTES: int = 10
+    OTP_MAX_ATTEMPTS: int = 3
+    
+    # Email
+    SMTP_HOST: str
+    SMTP_PORT: int = 587
+    SMTP_USER: str
+    SMTP_PASSWORD: str
+    SMTP_FROM_EMAIL: str
+    SMTP_FROM_NAME: str
+    
+    # CORS
+    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    
+    # File Upload
+    MAX_UPLOAD_SIZE: int = 5242880  # 5MB
+    ALLOWED_EXTENSIONS: List[str] = ["jpg", "jpeg", "png", "pdf"]
+    
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT == "production"
+    
+    @property
+    def is_local(self) -> bool:
+        return self.ENVIRONMENT == "local"
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
+
+settings = get_settings()
+
+# Environment-specific configurations
+if settings.is_production:
+    settings.DB_ECHO = False
+    settings.DEBUG = False
+```
+
+### 2. Logging Configuration
+```python
+# ✅ CORRECT: Structured logging
+import logging
+import sys
+from pythonjsonlogger import jsonlogger
+
+def setup_logging():
+    """Configure logging based on environment"""
+    log_level = logging.DEBUG if settings.DEBUG else logging.INFO
+    
+    # Create logger
+    logger = logging.getLogger()
+    logger.setLevel(log_level)
+    
+    # Console handler
+    handler = logging.StreamHandler(sys.stdout)
+    
+    if settings.is_production:
+        # JSON logging for production
+        formatter = jsonlogger.JsonFormatter(
+            '%(asctime)s %(name)s %(levelname)s %(message)s'
+        )
+    else:
+        # Readable logging for development
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+    
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    
+    return logger
+
+logger = setup_logging()
+
+# Usage in code
+logger.info("User logged in", extra={
+    "user_id": user.id,
+    "email": user.email,
+    "ip_address": request.client.host
+})
+```
+
+---
+
+## Testing Standards
+
+### 1. Pytest Structure
+```python
+# ✅ CORRECT: Comprehensive test setup
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.main import app
+from app.db.base import Base
+from app.core.dependencies import get_db
+
+# Test database
+SQLALCHEMY_TEST_DATABASE_URL = "postgresql://test:test@localhost/test_db"
+engine = create_engine(SQLALCHEMY_TEST_DATABASE_URL)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@pytest.fixture(scope="function")
+def db():
+    """Create a fresh database for each test"""
+    Base.metadata.create_all(bind=engine)
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine)
+
+@pytest.fixture(scope="function")
+def client(db):
+    """Create a test client with database override"""
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+    
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+@pytest.fixture
+def test_user(db):
+    """Create a test user"""
+    user = User(
+        email="test@example.com",
+        password_hash=hash_password("testpass123"),
+        full_name="Test User",
+        user_type=UserType.CUSTOMER,
+        status=UserStatus.ACTIVE,
+        is_verified=True
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+@pytest.fixture
+def auth_headers(test_user):
+    """Generate auth headers for test user"""
+    access_token = create_access_token(data={"sub": str(test_user.id)})
+    return {"Authorization": f"Bearer {access_token}"}
+
+# Test example
+def test_get_current_user(client, test_user, auth_headers):
+    """Test getting current user profile"""
+    response = client.get("/api/v1/users/me", headers=auth_headers)
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["data"]["email"] == test_user.email
+    assert data["data"]["id"] == test_user.id
+
+def test_unauthorized_access(client):
+    """Test accessing protected route without auth"""
+    response = client.get("/api/v1/users/me")
+    
+    assert response.status_code == 401
+    data = response.json()
+    assert data["success"] is False
+```
+
+### 2. Test Coverage Requirements
+- ✅ Minimum 80% code coverage
+- ✅ Test all API endpoints (success and error cases)
+- ✅ Test authentication and authorization
+- ✅ Test business logic in services
+- ✅ Test database operations in repositories
+- ✅ Test validation in Pydantic schemas
+- ✅ Test error handling and exceptions
+
+```python
+# ✅ CORRECT: Comprehensive test cases
+class TestAuthenticationFlow:
+    """Test complete authentication flow"""
+    
+    def test_register_customer_success(self, client, db):
+        """Test successful customer registration"""
+        payload = {
+            "email": "newcustomer@example.com",
+            "password": "SecurePass123",
+            "full_name": "New Customer",
+            "user_type": "CUSTOMER"
+        }
+        response = client.post("/api/v1/auth/register", json=payload)
+        
+        assert response.status_code == 201
+        data = response.json()
+        assert data["success"] is True
+        assert data["data"]["email"] == payload["email"]
+        assert "password" not in data["data"]  # Never return password
+    
+    def test_register_duplicate_email(self, client, test_user):
+        """Test registration with existing email"""
+        payload = {
+            "email": test_user.email,
+            "password": "SecurePass123",
+            "full_name": "Duplicate User",
+            "user_type": "CUSTOMER"
+        }
+        response = client.post("/api/v1/auth/register", json=payload)
+        
+        assert response.status_code == 400
+        data = response.json()
+        assert data["success"] is False
+        assert "already registered" in data["error"]["message"].lower()
+    
+    def test_login_success(self, client, test_user):
+        """Test successful login"""
+        payload = {
+            "email": test_user.email,
+            "password": "testpass123"
+        }
+        response = client.post("/api/v1/auth/login", json=payload)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert "access_token" in data["data"]
+        assert "refresh_token" in data["data"]
+        assert data["data"]["token_type"] == "bearer"
+    
+    def test_login_wrong_password(self, client, test_user):
+        """Test login with incorrect password"""
+        payload = {
+            "email": test_user.email,
+            "password": "wrongpassword"
+        }
+        response = client.post("/api/v1/auth/login", json=payload)
+        
+        assert response.status_code == 401
+        data = response.json()
+        assert data["success"] is False
+    
+    @pytest.mark.asyncio
+    async def test_otp_generation_and_verification(self, client, db, test_user):
+        """Test OTP generation and verification flow"""
+        # Request OTP
+        response = client.post(
+            "/api/v1/auth/send-otp",
+            json={"email": test_user.email}
+        )
+        assert response.status_code == 200
+        
+        # Get OTP from database (for testing only)
+        otp_record = db.query(OTP).filter(OTP.user_id == test_user.id).first()
+        assert otp_record is not None
+        
+        # Verify OTP
+        response = client.post(
+            "/api/v1/auth/verify-otp",
+            json={
+                "email": test_user.email,
+                "otp": otp_record.code
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+```
+
+---
+
+## Performance & Optimization
+
+### 1. Database Query Optimization
+```python
+# ✅ CORRECT: Efficient queries with indexes
+from sqlalchemy import Index, func
+
+class Business(Base):
+    __tablename__ = "businesses"
+    
+    # ... fields ...
+    
+    # Composite indexes for common queries
+    __table_args__ = (
+        Index('idx_business_search', 'category', 'status', 'rating'),
+        Index('idx_business_location', 'city', 'state'),
+        Index('idx_business_active', 'status', 'is_verified'),
+    )
+
+# Use select queries instead of lazy loading
+from sqlalchemy.future import select
+
+async def get_businesses_with_reviews(db: Session, limit: int = 10):
+    """Efficient query with joins"""
+    stmt = (
+        select(Business)
+        .options(
+            joinedload(Business.reviews),
+            joinedload(Business.services)
+        )
+        .filter(Business.status == "ACTIVE")
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    return result.scalars().unique().all()
+
+# ❌ WRONG: N+1 query problem
+businesses = db.query(Business).all()
+for business in businesses:
+    # Each iteration triggers a separate query
+    print(business.reviews)  # ❌
+    print(business.services)  # ❌
+```
+
+### 2. Caching Strategy
+```python
+# ✅ CORRECT: Redis caching for frequently accessed data
+from redis import Redis
+from functools import wraps
+import json
+import hashlib
+
+redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+
+def cache_response(expire: int = 300):
+    """Decorator to cache function responses"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Create cache key from function name and arguments
+            cache_key = f"{func.__name__}:{hashlib.md5(str(args).encode() + str(kwargs).encode()).hexdigest()}"
+            
+            # Try to get from cache
+            cached = redis_client.get(cache_key)
+            if cached:
+                return json.loads(cached)
+            
+            # Execute function
+            result = await func(*args, **kwargs)
+            
+            # Store in cache
+            redis_client.setex(
+                cache_key,
+                expire,
+                json.dumps(result, default=str)
+            )
+            
+            return result
+        return wrapper
+    return decorator
+
+# Usage
+@cache_response(expire=600)  # Cache for 10 minutes
+async def get_top_rated_businesses(db: Session, limit: int = 10):
+    """Get top rated businesses (cached)"""
+    businesses = (
+        db.query(Business)
+        .filter(Business.status == "ACTIVE")
+        .order_by(Business.rating.desc())
+        .limit(limit)
+        .all()
+    )
+    return businesses
+
+# Invalidate cache when data changes
+async def update_business_rating(db: Session, business_id: int, new_rating: float):
+    """Update business rating and invalidate cache"""
+    business = db.query(Business).filter(Business.id == business_id).first()
+    business.rating = new_rating
+    db.commit()
+    
+    # Invalidate related caches
+    pattern = "get_top_rated_businesses:*"
+    for key in redis_client.scan_iter(pattern):
+        redis_client.delete(key)
+```
+
+### 3. Async Operations
+```python
+# ✅ CORRECT: Use async for I/O operations
+from asyncio import gather
+from typing import List
+
+async def send_notifications_bulk(user_ids: List[int], message: str):
+    """Send notifications to multiple users concurrently"""
+    tasks = [
+        send_email_notification(user_id, message)
+        for user_id in user_ids
+    ]
+    results = await gather(*tasks, return_exceptions=True)
+    
+    # Handle results
+    successful = sum(1 for r in results if not isinstance(r, Exception))
+    logger.info(f"Sent {successful}/{len(user_ids)} notifications")
+    
+    return successful
+
+# ❌ WRONG: Synchronous operations in loop
+async def send_notifications_bulk_wrong(user_ids: List[int], message: str):
+    for user_id in user_ids:
+        await send_email_notification(user_id, message)  # ❌ Sequential
+```
+
+---
+
+## Project-Specific Patterns
+
+### 1. OTP Service Implementation
+```python
+# ✅ CORRECT: Complete OTP service
+import random
+import string
+from datetime import datetime, timedelta
+from redis import Redis
+
+class OTPService:
+    def __init__(self, db: Session, redis_client: Redis):
+        self.db = db
+        self.redis = redis_client
+        self.otp_length = settings.OTP_LENGTH
+        self.expiry_minutes = settings.OTP_EXPIRY_MINUTES
+        self.max_attempts = settings.OTP_MAX_ATTEMPTS
+    
+    def generate_otp(self) -> str:
+        """Generate cryptographically secure OTP"""
+        return ''.join(random.SystemRandom().choices(string.digits, k=self.otp_length))
+    
+    async def create_and_send_otp(self, user_id: int, email: str) -> bool:
+        """Create OTP and send via email"""
+        # Generate OTP
+        otp_code = self.generate_otp()
+        expiry = datetime.utcnow() + timedelta(minutes=self.expiry_minutes)
+        
+        # Store in Redis (primary storage)
+        redis_key = f"otp:{user_id}"
+        otp_data = {
+            "code": otp_code,
+            "attempts": 0,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        self.redis.setex(
+            redis_key,
+            self.expiry_minutes * 60,
+            json.dumps(otp_data)
+        )
+        
+        # Store in PostgreSQL (backup/audit trail)
+        db_otp = OTP(
+            user_id=user_id,
+            code=otp_code,
+            expires_at=expiry,
+            is_used=False
+        )
+        self.db.add(db_otp)
+        self.db.commit()
+        
+        # Send email
+        await email_service.send_otp_email(email, otp_code, self.expiry_minutes)
+        
+        logger.info(f"OTP created for user {user_id}")
+        return True
+    
+    async def verify_otp(self, user_id: int, otp_code: str) -> bool:
+        """Verify OTP code"""
+        redis_key = f"otp:{user_id}"
+        
+        # Get from Redis
+        otp_data_str = self.redis.get(redis_key)
+        if not otp_data_str:
+            raise ValidationException("OTP expired or not found")
+        
+        otp_data = json.loads(otp_data_str)
+        
+        # Check attempts
+        if otp_data["attempts"] >= self.max_attempts:
+            self.redis.delete(redis_key)
+            raise ValidationException("Maximum OTP attempts exceeded")
+        
+        # Verify code
+        if otp_data["code"] != otp_code:
+            # Increment attempts
+            otp_data["attempts"] += 1
+            self.redis.setex(
+                redis_key,
+                self.expiry_minutes * 60,
+                json.dumps(otp_data)
+            )
+            raise ValidationException("Invalid OTP code")
+        
+        # Mark as used in database
+        db_otp = (
+            self.db.query(OTP)
+            .filter(
+                OTP.user_id == user_id,
+                OTP.code == otp_code,
+                OTP.is_used == False
+            )
+            .first()
+        )
+        if db_otp:
+            db_otp.is_used = True
+            db_otp.used_at = datetime.utcnow()
+            self.db.commit()
+        
+        # Delete from Redis
+        self.redis.delete(redis_key)
+        
+        logger.info(f"OTP verified for user {user_id}")
+        return True
+    
+    async def cleanup_expired_otps(self):
+        """Cleanup expired OTPs from database"""
+        expired = (
+            self.db.query(OTP)
+            .filter(OTP.expires_at < datetime.utcnow(), OTP.is_used == False)
+            .all()
+        )
+        for otp in expired:
+            self.db.delete(otp)
+        self.db.commit()
+        logger.info(f"Cleaned up {len(expired)} expired OTPs")
+```
+
+### 2. Search & Matching Algorithm
+```python
+# ✅ CORRECT: Sophisticated search implementation
+from sqlalchemy import or_, and_, func
+from geoalchemy2 import Geography
+
+class SearchService:
+    def __init__(self, db: Session):
+        self.db = db
+    
+    async def search_businesses(
+        self,
+        keyword: str,
+        latitude: float,
+        longitude: float,
+        radius: int = 10,
+        urgency: str = "immediate",
+        limit: int = 10
+    ) -> List[Business]:
+        """
+        Search businesses with sophisticated matching algorithm
+        
+        Ranking factors:
+        1. Keyword relevance (40%)
+        2. Distance (30%)
+        3. Rating (20%)
+        4. Response rate (10%)
+        """
+        
+        # Create point for user location
+        user_location = f'POINT({longitude} {latitude})'
+        
+        # Base query
+        query = (
+            self.db.query(
+                Business,
+                func.ST_Distance(
+                    Business.location,
+                    func.ST_GeogFromText(user_location)
+                ).label('distance')
+            )
+            .filter(
+                Business.status == "ACTIVE",
+                Business.is_verified == True
+            )
+        )
+        
+        # Keyword matching (search in multiple fields)
+        if keyword:
+            keyword_filter = or_(
+                Business.name.ilike(f'%{keyword}%'),
+                Business.description.ilike(f'%{keyword}%'),
+                Business.services.any(Service.name.ilike(f'%{keyword}%')),
+                Business.category.contains([keyword.lower()])
+            )
+            query = query.filter(keyword_filter)
+        
+        # Geographic filtering (within radius)
+        radius_meters = radius * 1609.34  # Convert miles to meters
+        query = query.filter(
+            func.ST_DWithin(
+                Business.location,
+                func.ST_GeogFromText(user_location),
+                radius_meters
+            )
+        )
+        
+        # Filter by availability
+        if urgency == "immediate":
+            query = query.filter(
+                Business.availability_status == "AVAILABLE"
+            )
+        
+        # Ranking calculation
+        # Distance score: closer is better (inverse distance)
+        # Rating score: higher is better
+        # Response rate score: faster is better
+        query = query.order_by(
+            (
+                Business.rating * 0.4 +  # Rating weight
+                (1 / (func.coalesce(func.nullif(func.ST_Distance(
+                    Business.location,
+                    func.ST_GeogFromText(user_location)
+                ), 0), 1) / 1000)) * 0.3 +  # Distance weight
+                Business.response_rate * 0.2 +  # Response rate weight
+                Business.subscription_tier * 0.1  # Subscription tier weight
+            ).desc()
+        )
+        
+        # Limit results
+        results = query.limit(limit).all()
+        
+        # Format response with calculated distance
+        businesses_with_distance = []
+        for business, distance in results:
+            business.distance = round(distance / 1609.34, 2)  # Convert to miles
+            businesses_with_distance.append(business)
+        
+        return businesses_with_distance
+```
+
+### 3. Real-Time Chat Service
+```python
+# ✅ CORRECT: WebSocket chat implementation
+from fastapi import WebSocket, WebSocketDisconnect
+from typing import Dict, List
+import json
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[int, List[WebSocket]] = {}
+    
+    async def connect(self, user_id: int, websocket: WebSocket):
+        """Connect user to WebSocket"""
+        await websocket.accept()
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = []
+        self.active_connections[user_id].append(websocket)
+        logger.info(f"User {user_id} connected to WebSocket")
+    
+    def disconnect(self, user_id: int, websocket: WebSocket):
+        """Disconnect user from WebSocket"""
+        if user_id in self.active_connections:
+            self.active_connections[user_id].remove(websocket)
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
+        logger.info(f"User {user_id} disconnected from WebSocket")
+    
+    async def send_personal_message(self, user_id: int, message: dict):
+        """Send message to specific user"""
+        if user_id in self.active_connections:
+            for connection in self.active_connections[user_id]:
+                await connection.send_json(message)
+    
+    async def broadcast_to_conversation(
+        self,
+        conversation_id: int,
+        message: dict,
+        exclude_user_id: int = None
+    ):
+        """Broadcast message to all users in a conversation"""
+        # Get all users in conversation
+        conversation = db.query(Conversation).filter(
+            Conversation.id == conversation_id
+        ).first()
+        
+        user_ids = [conversation.customer_id, conversation.business_id]
+        if exclude_user_id:
+            user_ids.remove(exclude_user_id)
+        
+        for user_id in user_ids:
+            await self.send_personal_message(user_id, message)
+
+manager = ConnectionManager()
+
+@router.websocket("/ws/chat/{user_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    user_id: int,
+    token: str,
+    db: Session = Depends(get_db)
+):
+    """WebSocket endpoint for real-time chat"""
+    # Verify token
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        if payload.get("sub") != str(user_id):
+            await websocket.close(code=1008)
+            return
+    except JWTError:
+        await websocket.close(code=1008)
+        return
+    
+    await manager.connect(user_id, websocket)
+    
+    try:
+        while True:
+            # Receive message
+            data = await websocket.receive_json()
+            
+            # Validate message
+            message_data = MessageCreate(**data)
+            
+            # Save to database
+            message = await chat_service.create_message(
+                db=db,
+                conversation_id=message_data.conversation_id,
+                sender_id=user_id,
+                message_text=message_data.message_text,
+                message_type=message_data.message_type
+            )
+            
+            # Broadcast to conversation
+            await manager.broadcast_to_conversation(
+                conversation_id=message_data.conversation_id,
+                message={
+                    "type": "new_message",
+                    "data": {
+                        "id": message.id,
+                        "conversation_id": message.conversation_id,
+                        "sender_id": message.sender_id,
+                        "message_text": message.message_text,
+                        "timestamp": message.timestamp.isoformat()
+                    }
+                }
+            )
+            
+            # Send push notification if recipient is offline
+            await notification_service.notify_message(
+                db=db,
+                message_id=message.id
+            )
+            
+    except WebSocketDisconnect:
+        manager.disconnect(user_id, websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error for user {user_id}: {str(e)}")
+        manager.disconnect(user_id, websocket)
+```
+
+### 4. Lead Management Service
+```python
+# ✅ CORRECT: Lead generation and notification
+from typing import List
+import asyncio
+
+class LeadService:
+    def __init__(self, db: Session):
+        self.db = db
+    
+    async def create_lead_from_search(
+        self,
+        customer_id: int,
+        search_data: dict,
+        matched_businesses: List[Business]
+    ) -> List[Lead]:
+        """Create leads for matched businesses"""
+        leads = []
+        
+        for business in matched_businesses:
+            # Create lead record
+            lead = Lead(
+                customer_id=customer_id,
+                business_id=business.id,
+                service_keyword=search_data['keyword'],
+                customer_location=search_data['location'],
+                urgency=search_data['urgency'],
+                status=LeadStatus.NEW,
+                distance=business.distance
+            )
+            self.db.add(lead)
+            leads.append(lead)
+        
+        self.db.commit()
+        
+        # Send notifications asynchronously
+        notification_tasks = [
+            self.notify_business_owner(lead)
+            for lead in leads
+        ]
+        await asyncio.gather(*notification_tasks)
+        
+        return leads
+    
+    async def notify_business_owner(self, lead: Lead):
+        """Send notification to business owner about new lead"""
+        business = lead.business
+        customer = lead.customer
+        
+        # Email notification
+        await email_service.send_lead_notification(
+            to_email=business.user.email,
+            business_name=business.name,
+            service_needed=lead.service_keyword,
+            customer_name=customer.user.full_name,
+            customer_location=lead.customer_location['city'],
+            distance=lead.distance,
+            urgency=lead.urgency,
+            lead_id=lead.id
+        )
+        
+        # SMS notification (if premium tier)
+        if business.subscription_tier in ['PRO', 'PREMIUM']:
+            await sms_service.send_lead_notification(
+                phone=business.user.phone,
+                message=f"New {lead.urgency} lead: {lead.service_keyword} in {lead.customer_location['city']}"
+            )
+        
+        # Push notification
+        await push_service.send_notification(
+            user_id=business.user_id,
+            title="New Lead Available",
+            body=f"{customer.user.full_name} is looking for {lead.service_keyword}",
+            data={"lead_id": lead.id, "type": "new_lead"}
+        )
+        
+        # WebSocket notification (real-time)
+        await manager.send_personal_message(
+            user_id=business.user_id,
+            message={
+                "type": "new_lead",
+                "data": {
+                    "lead_id": lead.id,
+                    "service": lead.service_keyword,
+                    "customer": customer.user.full_name,
+                    "urgency": lead.urgency
+                }
+            }
+        )
+```
+
+---
+
+## Code Documentation
+
+### 1. Docstring Format (Google Style)
+```python
+# ✅ CORRECT: Comprehensive docstrings
+async def search_businesses(
+    db: Session,
+    keyword: str,
+    latitude: float,
+    longitude: float,
+    radius: int = 10,
+    limit: int = 10
+) -> List[Business]:
+    """
+    Search for businesses based on location and keyword.
+    
+    This function implements a sophisticated matching algorithm that considers
+    multiple factors including keyword relevance, geographic proximity, business
+    rating, and response rate.
+    
+    Args:
+        db: Database session for queries
+        keyword: Search term for service type (e.g., "plumber", "electrician")
+        latitude: User's latitude coordinate
+        longitude: User's longitude coordinate
+        radius: Maximum distance in miles (default: 10)
+        limit: Maximum number of results to return (default: 10)
+    
+    Returns:
+        List of Business objects sorted by relevance score, including calculated
+        distance from user location.
+    
+    Raises:
+        ValidationException: If coordinates are invalid
+        DatabaseException: If database query fails
+    
+    Examples:
+        >>> businesses = await search_businesses(
+        ...     db=db,
+        ...     keyword="plumber",
+        ...     latitude=32.7767,
+        ...     longitude=-96.7970,
+        ...     radius=15
+        ... )
+        >>> len(businesses)
+        10
+        >>> businesses[0].distance
+        2.3  # miles from user
+    
+    Note:
+        Results are cached for 5 minutes to improve performance.
+        Geographic queries use PostGIS for accurate distance calculations.
+    """
+    pass
+
+# ❌ WRONG: No or minimal documentation
+async def search_businesses(db, keyword, lat, lng, radius=10):  # ❌
+    """Search businesses"""  # ❌ Too vague
+    pass
+```
+
+### 2. Code Comments
+```python
+# ✅ CORRECT: Strategic comments explaining "why", not "what"
+async def calculate_business_score(business: Business, user_location: tuple) -> float:
+    """Calculate relevance score for business ranking"""
+    
+    # Weight factors based on user studies showing rating is most important
+    # for user trust, followed by proximity for service convenience
+    RATING_WEIGHT = 0.4
+    DISTANCE_WEIGHT = 0.3
+    RESPONSE_WEIGHT = 0.2
+    SUBSCRIPTION_WEIGHT = 0.1
+    
+    # Normalize rating to 0-1 scale (assuming 5-star max)
+    rating_score = business.rating / 5.0
+    
+    # Distance score uses inverse relationship: closer is better
+    # Cap at 50 miles to avoid division by very small numbers
+    distance = min(calculate_distance(business.location, user_location), 50)
+    distance_score = 1 - (distance / 50)
+    
+    # Response rate already normalized (0-1)
+    response_score = business.response_rate
+    
+    # Subscription tier: Basic=1, Pro=2, Premium=3
+    subscription_score = business.subscription_tier / 3.0
+    
+    # Calculate weighted sum
+    total_score = (
+        rating_score * RATING_WEIGHT +
+        distance_score * DISTANCE_WEIGHT +
+        response_score * RESPONSE_WEIGHT +
+        subscription_score * SUBSCRIPTION_WEIGHT
+    )
+    
+    return total_score
+
+# ❌ WRONG: Comments explaining obvious code
+def add_numbers(a, b):
+    # Add a and b  ❌ Obvious from function name
+    result = a + b  # Store result in variable  ❌ Obvious
+    return result  # Return the result  ❌ Obvious
+```
+
+---
+
+## Common Mistakes to Avoid
+
+### ❌ DON'T DO THESE:
+
+1. **Don't put business logic in routes**
+```python
+# ❌ WRONG
+@router.post("/businesses")
+async def create_business(data: dict, db: Session = Depends(get_db)):
+    # Validation logic ❌
+    if not data.get('email'):
+        raise HTTPException(400, "Email required")
+    
+    # Business logic ❌
+    hashed_password = hash_password(data['password'])
+    
+    # Database operation ❌
+    business = Business(**data, password_hash=hashed_password)
+    db.add(business)
+    db.commit()
+    
+    return business
+```
+
+2. **Don't use raw SQL queries**
+```python
+# ❌ WRONG
+def get_user_by_email(db: Session, email: str):
+    result = db.execute(f"SELECT * FROM users WHERE email = '{email}'")  # ❌ SQL injection risk!
+    return result.fetchone()
+```
+
+3. **Don't ignore error handling**
+```python
+# ❌ WRONG
+@router.get("/users/{user_id}")
+async def get_user(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    return user.email  # ❌ What if user is None?
+```
+
+4. **Don't return sensitive data**
+```python
+# ❌ WRONG
+@router.get("/users/me")
+async def get_current_user(current_user: User = Depends(get_current_user)):
+    return current_user  # ❌ Returns password_hash and other sensitive fields!
+```
+
+5. **Don't use mutable default arguments**
+```python
+# ❌ WRONG
+def process_items(items: list = []):  # ❌ Mutable default!
+    items.append("new")
+    return items
+
+# ✅ CORRECT
+def process_items(items: Optional[list] = None):
+    if items is None:
+        items = []
+    items.append("new")
+    return items
+```
+
+---
+
+## Final Checklist for Every Feature
+
+Before marking any feature as complete, verify:
+
+- [ ] ✅ Follows layered architecture (API → Service → Repository → Model)
+- [ ] ✅ Complete type hints on all functions
+- [ ] ✅ Pydantic schemas for request/response validation
+- [ ] ✅ Proper error handling with custom exceptions
+- [ ] ✅ Consistent response format (SuccessResponse/ErrorResponse)
+- [ ] ✅ Authentication/authorization where needed
+- [ ] ✅ Input validation and sanitization
+- [ ] ✅ Database queries optimized (no N+1 queries)
+- [ ] ✅ Comprehensive docstrings (Google style)
+- [ ] ✅ Unit tests written and passing
+- [ ] ✅ No sensitive data in responses
+- [ ] ✅ Logging for important operations
+- [ ] ✅ Environment-aware configuration used
+- [ ] ✅ Code formatted with Black
+- [ ] ✅ No SQL injection vulnerabilities
+
+---
+
+## When to Use REST vs GraphQL
+
+### Use REST for:
+- Authentication endpoints (simple, atomic operations)
+- File uploads
+- WebSocket connections (chat)
+- Webhooks
+- Operations requiring specific HTTP status codes
+- Simple CRUD operations
+
+### Use GraphQL for:
+- Complex data fetching (business profile with reviews, services, stats)
+- Searching with multiple filters
+- Dashboard aggregations
+- Mobile app queries (reduce over-fetching)
+- Flexible data requirements (different clients need different fields)
+
+---
+
+## Remember
+
+1. **Security First**: Always validate inputs, never trust user data
+2. **Performance Matters**: Use indexes, caching, and async operations
+3. **Code Quality**: Type hints, documentation, and tests are not optional
+4. **Consistency**: Follow patterns established in the codebase
+5. **Simplicity**: Clear code is better than clever code
+6. **Environment Awareness**: Different configs for local/production
+7. **Error Handling**: Fail gracefully with helpful error messages
+8. **Testing**: Write tests as you code, not after
+
+---
+
+## Project-Specific Notes
+
+- This is a **two-app system**: Customer App and Business Owner App
+- **Real-time chat** is critical: Use WebSocket properly
+- **Location-based search**: Use PostGIS for geographic queries
+- **OTP verification**: Redis for speed, PostgreSQL for audit
+- **Lead generation**: Asynchronous notifications are essential
+- **Subscription tiers**: Affect ranking and features
+- **Rating system**: Influences search ranking significantly
+- **Mobile-first**: Optimize response sizes for mobile clients
+
+---
+
+**Generated for Service Marketplace Backend Project**
+**FastAPI + PostgreSQL + Redis + WebSocket + GraphQL**
