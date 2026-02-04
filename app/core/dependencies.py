@@ -51,20 +51,21 @@ async def get_current_user(
     if payload is None:
         raise credentials_exception
 
-    user_id: Optional[str] = payload.get("sub")
-    if user_id is None:
+    user_id_str: Optional[str] = payload.get("sub")
+    if user_id_str is None:
+        raise credentials_exception
+
+    # Convert string UUID to UUID object
+    from uuid import UUID
+    try:
+        user_id = UUID(user_id_str)
+    except (ValueError, TypeError):
         raise credentials_exception
 
     user_repository = UserRepository(db)
-    user = user_repository.get_by_id(int(user_id))
+    user = user_repository.get_by_id(user_id)
     if user is None:
         raise credentials_exception
-
-    if user.status != "ACTIVE":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is not active",
-        )
 
     return user
 

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models.user import User, UserType, UserStatus
+from app.models.user import User, UserType
 from app.core.security import hash_password, set_redis_client
 
 # Test database URL (use SQLite for testing)
@@ -75,7 +75,6 @@ def test_user(db) -> User:
         password_hash=hash_password("testpass123"),
         full_name="Test User",
         user_type=UserType.CUSTOMER,
-        status=UserStatus.ACTIVE,
         is_verified=True,
     )
     db.add(user)
@@ -92,7 +91,6 @@ def test_business_user(db) -> User:
         password_hash=hash_password("testpass123"),
         full_name="Business Owner",
         user_type=UserType.BUSINESS_OWNER,
-        status=UserStatus.ACTIVE,
         is_verified=True,
     )
     db.add(user)

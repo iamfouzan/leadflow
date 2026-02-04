@@ -42,12 +42,12 @@ class OTPService:
         otp = "".join([str(secrets.randbelow(10)) for _ in range(self.otp_length)])
         return otp
 
-    def create_and_send_otp(self, user_id: int, email: str, purpose: str = "verification") -> str:
+    def create_and_send_otp(self, user_id, email: str, purpose: str = "verification") -> str:
         """
         Create OTP and send via email.
 
         Args:
-            user_id: User ID
+            user_id: User ID (UUID)
             email: User email address
             purpose: OTP purpose (verification or password_reset)
 
@@ -61,8 +61,8 @@ class OTPService:
         otp_code = self.generate_otp()
         expires_at = datetime.utcnow() + timedelta(minutes=self.expiry_minutes)
 
-        # Store in Redis (primary storage)
-        redis_key = f"otp:{user_id}"
+        # Store in Redis (primary storage) - convert UUID to string
+        redis_key = f"otp:{str(user_id)}"
         otp_data = {
             "code": otp_code,
             "attempts": 0,
@@ -110,12 +110,12 @@ class OTPService:
         logger.info(f"OTP created and sent for user {user_id}")
         return otp_code
 
-    def verify_otp(self, user_id: int, otp_code: str) -> bool:
+    def verify_otp(self, user_id, otp_code: str) -> bool:
         """
         Verify OTP code.
 
         Args:
-            user_id: User ID
+            user_id: User ID (UUID)
             otp_code: OTP code to verify
 
         Returns:
@@ -124,7 +124,7 @@ class OTPService:
         Raises:
             OTPException: If OTP is invalid, expired, or max attempts exceeded
         """
-        redis_key = f"otp:{user_id}"
+        redis_key = f"otp:{str(user_id)}"
 
         # Get from Redis
         otp_data_str = self.redis.get(redis_key)

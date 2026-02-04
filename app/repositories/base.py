@@ -1,5 +1,6 @@
 """Base repository with common CRUD operations."""
 from typing import Generic, TypeVar, Type, Optional, List, Dict, Any
+from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
@@ -22,12 +23,12 @@ class BaseRepository(Generic[ModelType]):
         self.model = model
         self.db = db
 
-    def get_by_id(self, id: int) -> Optional[ModelType]:
+    def get_by_id(self, id: UUID) -> Optional[ModelType]:
         """
         Get model by ID.
 
         Args:
-            id: Model ID
+            id: Model ID (UUID)
 
         Returns:
             Model instance or None if not found
@@ -80,12 +81,12 @@ class BaseRepository(Generic[ModelType]):
         self.db.refresh(db_obj)
         return db_obj
 
-    def delete(self, id: int) -> Optional[ModelType]:
+    def delete(self, id: UUID) -> Optional[ModelType]:
         """
         Delete model by ID.
 
         Args:
-            id: Model ID
+            id: Model ID (UUID)
 
         Returns:
             Deleted model instance or None if not found

@@ -1,5 +1,6 @@
 """Customer model."""
-from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy import Column, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.base import BaseModel
@@ -10,7 +11,7 @@ class Customer(BaseModel):
 
     __tablename__ = "customers"
 
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
 
     # Relationship
     user = relationship("User", back_populates="customer_profile")

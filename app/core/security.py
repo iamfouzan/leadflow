@@ -228,12 +228,12 @@ def blacklist_token(token: str) -> None:
         pass
 
 
-def generate_token_data(user_id: int, email: str, user_type: str) -> Dict[str, Any]:
+def generate_token_data(user_id: str, email: str, user_type: str) -> Dict[str, Any]:
     """
     Generate token payload data.
 
     Args:
-        user_id: User ID
+        user_id: User ID as string (UUID converted to string)
         email: User email
         user_type: User type (CUSTOMER or BUSINESS_OWNER)
 
@@ -241,7 +241,7 @@ def generate_token_data(user_id: int, email: str, user_type: str) -> Dict[str, A
         Token payload dictionary
     """
     return {
-        "sub": str(user_id),
+        "sub": user_id,
         "email": email,
         "user_type": user_type,
     }

@@ -1,5 +1,6 @@
 """Customer data access repository."""
 from typing import Optional
+from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.repositories.base import BaseRepository
@@ -13,12 +14,12 @@ class CustomerRepository(BaseRepository[Customer]):
         """Initialize customer repository."""
         super().__init__(Customer, db)
 
-    def get_by_user_id(self, user_id: int) -> Optional[Customer]:
+    def get_by_user_id(self, user_id: UUID) -> Optional[Customer]:
         """
         Get customer by user ID.
 
         Args:
-            user_id: User ID
+            user_id: User ID (UUID)
 
         Returns:
             Customer instance or None if not found

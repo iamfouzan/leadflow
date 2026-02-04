@@ -2,12 +2,13 @@
 from typing import Optional
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models.user import UserType
+from app.models.user import UserType, Gender
 
 
 class RegisterRequest(BaseModel):
     """User registration request schema."""
 
+    # Required fields
     email: EmailStr
     password: str = Field(
         ...,
@@ -16,8 +17,19 @@ class RegisterRequest(BaseModel):
         description="Password must be between 8 and 72 characters (bcrypt limit is 72 bytes)",
     )
     full_name: str = Field(..., min_length=1, max_length=100)
-    phone: Optional[str] = Field(None, max_length=20)
     user_type: UserType
+    
+    # Optional personal information fields
+    phone: Optional[str] = Field(None, max_length=20)
+    address: Optional[str] = Field(None, max_length=255)
+    city: Optional[str] = Field(None, max_length=100)
+    state: Optional[str] = Field(None, max_length=100)
+    country: Optional[str] = Field(None, max_length=100)
+    picture: Optional[str] = Field(None, max_length=500, description="URL to profile picture")
+    gender: Optional[Gender] = None
+    
+    # Business owner specific field
+    have_subscription: Optional[bool] = Field(None, description="Only valid for business owners")
 
 
 class LoginRequest(BaseModel):
