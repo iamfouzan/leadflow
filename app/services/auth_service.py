@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 import logging
 
-from app.models.user import User, UserType, UserStatus
+from app.models.user import User, UserType
 from app.repositories.user_repository import UserRepository
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.business_repository import BusinessRepository
@@ -34,7 +34,7 @@ class AuthService:
 
     def register(self, register_data: RegisterRequest) -> User:
         """
-        Register new user (Customer or Business Owner).
+        Register new user (Customer, Business Owner, or Admin).
 
         Args:
             register_data: Registration request data
@@ -56,6 +56,10 @@ class AuthService:
             if existing_phone:
                 raise ValidationException("Phone number already registered")
 
+        # Validate: have_subscription only for business owners
+        if register_data.user_type != UserType.BUSINESS_OWNER and register_data.have_subscription is not None:
+            raise ValidationException("have_subscription field is only valid for business owners")
+
         # Hash password
         try:
             password_hash = hash_password(register_data.password)
@@ -69,8 +73,13 @@ class AuthService:
             "full_name": register_data.full_name,
             "phone": register_data.phone,
             "user_type": register_data.user_type.value,
-            "status": UserStatus.PENDING.value,
             "is_verified": False,
+            "address": register_data.address,
+            "city": register_data.city,
+            "state": register_data.state,
+            "country": register_data.country,
+            "picture": register_data.picture,
+            "gender": register_data.gender.value if register_data.gender else None,
         }
 
         user = self.user_repository.create(user_data)
@@ -80,8 +89,12 @@ class AuthService:
             customer_data = {"user_id": user.id}
             self.customer_repository.create(customer_data)
         elif register_data.user_type == UserType.BUSINESS_OWNER:
-            business_data = {"user_id": user.id}
+            business_data = {
+                "user_id": user.id,
+                "have_subscription": register_data.have_subscription or False,
+            }
             self.business_repository.create(business_data)
+        # ADMIN users don't need a profile table (they only exist in users table)
 
         logger.info(f"User registered: {user.email} ({user.user_type})")
         return user
@@ -108,12 +121,8 @@ class AuthService:
         if not verify_password(login_data.password, user.password_hash):
             raise AuthenticationException("Invalid email or password")
 
-        # Check if user is active
-        if user.status != UserStatus.ACTIVE:
-            raise AuthenticationException("User account is not active. Please verify your email.")
-
-        # Generate token data
-        token_data = generate_token_data(user.id, user.email, user.user_type.value)
+        # Generate token data (convert UUID to string)
+        token_data = generate_token_data(str(user.id), user.email, user.user_type.value)
 
         # Create tokens
         access_token = create_access_token(token_data)
@@ -173,16 +182,22 @@ class AuthService:
             raise AuthenticationException("Invalid token type")
 
         # Get user
-        user_id = payload.get("sub")
-        if not user_id:
+        user_id_str = payload.get("sub")
+        if not user_id_str:
             raise AuthenticationException("Invalid token payload")
 
-        user = self.user_repository.get_by_id(int(user_id))
+        from uuid import UUID
+        try:
+            user_id = UUID(user_id_str)
+        except (ValueError, TypeError):
+            raise AuthenticationException("Invalid user ID in token")
+
+        user = self.user_repository.get_by_id(user_id)
         if not user:
             raise AuthenticationException("User not found")
 
-        # Generate new access token
-        token_data = generate_token_data(user.id, user.email, user.user_type.value)
+        # Generate new access token (convert UUID to string)
+        token_data = generate_token_data(str(user.id), user.email, user.user_type.value)
         access_token = create_access_token(token_data)
 
         logger.info(f"Access token refreshed for user: {user.email}")
@@ -192,12 +207,12 @@ class AuthService:
             "token_type": "bearer",
         }
 
-    def reset_password(self, user_id: int, new_password: str) -> bool:
+    def reset_password(self, user_id, new_password: str) -> bool:
         """
         Reset user password.
 
         Args:
-            user_id: User ID
+            user_id: User ID (UUID)
             new_password: New password
 
         Returns:
@@ -208,7 +223,7 @@ class AuthService:
         """
         user = self.user_repository.get_by_id(user_id)
         if not user:
-            raise ResourceNotFoundException("User", user_id)
+            raise ResourceNotFoundException("User", str(user_id))
 
         # Hash new password
         try:

@@ -1,5 +1,6 @@
 """Business data access repository."""
 from typing import Optional
+from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.repositories.base import BaseRepository
@@ -13,12 +14,12 @@ class BusinessRepository(BaseRepository[Business]):
         """Initialize business repository."""
         super().__init__(Business, db)
 
-    def get_by_user_id(self, user_id: int) -> Optional[Business]:
+    def get_by_user_id(self, user_id: UUID) -> Optional[Business]:
         """
         Get business by user ID.
 
         Args:
-            user_id: User ID
+            user_id: User ID (UUID)
 
         Returns:
             Business instance or None if not found

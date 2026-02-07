@@ -1,5 +1,6 @@
 """OTP data access repository."""
 from typing import Optional, List
+from uuid import UUID
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
@@ -15,12 +16,12 @@ class OTPRepository(BaseRepository[OTP]):
         """Initialize OTP repository."""
         super().__init__(OTP, db)
 
-    def get_by_user_and_code(self, user_id: int, code: str) -> Optional[OTP]:
+    def get_by_user_and_code(self, user_id: UUID, code: str) -> Optional[OTP]:
         """
         Get OTP by user ID and code.
 
         Args:
-            user_id: User ID
+            user_id: User ID (UUID)
             code: OTP code
 
         Returns:
@@ -39,12 +40,12 @@ class OTPRepository(BaseRepository[OTP]):
             .first()
         )
 
-    def get_active_by_user(self, user_id: int) -> Optional[OTP]:
+    def get_active_by_user(self, user_id: UUID) -> Optional[OTP]:
         """
         Get active OTP for user.
 
         Args:
-            user_id: User ID
+            user_id: User ID (UUID)
 
         Returns:
             Active OTP instance or None if not found
@@ -62,12 +63,12 @@ class OTPRepository(BaseRepository[OTP]):
             .first()
         )
 
-    def increment_attempts(self, otp_id: int) -> Optional[OTP]:
+    def increment_attempts(self, otp_id: UUID) -> Optional[OTP]:
         """
         Increment OTP attempt count.
 
         Args:
-            otp_id: OTP ID
+            otp_id: OTP ID (UUID)
 
         Returns:
             Updated OTP instance or None if not found
@@ -79,12 +80,12 @@ class OTPRepository(BaseRepository[OTP]):
             self.db.refresh(otp)
         return otp
 
-    def mark_as_used(self, otp_id: int) -> Optional[OTP]:
+    def mark_as_used(self, otp_id: UUID) -> Optional[OTP]:
         """
         Mark OTP as used.
 
         Args:
-            otp_id: OTP ID
+            otp_id: OTP ID (UUID)
 
         Returns:
             Updated OTP instance or None if not found

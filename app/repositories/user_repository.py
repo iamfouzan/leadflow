@@ -1,9 +1,10 @@
 """User data access repository."""
 from typing import Optional
+from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.repositories.base import BaseRepository
-from app.models.user import User, UserType, UserStatus
+from app.models.user import User, UserType
 
 
 class UserRepository(BaseRepository[User]):
@@ -54,30 +55,12 @@ class UserRepository(BaseRepository[User]):
             .first()
         )
 
-    def update_status(self, user_id: int, status: UserStatus) -> Optional[User]:
+    def verify_user(self, user_id: UUID) -> Optional[User]:
         """
-        Update user status.
+        Verify user account via OTP.
 
         Args:
-            user_id: User ID
-            status: New status
-
-        Returns:
-            Updated user instance or None if not found
-        """
-        user = self.get_by_id(user_id)
-        if user:
-            user.status = status
-            self.db.commit()
-            self.db.refresh(user)
-        return user
-
-    def verify_user(self, user_id: int) -> Optional[User]:
-        """
-        Verify user account.
-
-        Args:
-            user_id: User ID
+            user_id: User ID (UUID)
 
         Returns:
             Updated user instance or None if not found
@@ -85,7 +68,6 @@ class UserRepository(BaseRepository[User]):
         user = self.get_by_id(user_id)
         if user:
             user.is_verified = True
-            user.status = UserStatus.ACTIVE
             self.db.commit()
             self.db.refresh(user)
         return user

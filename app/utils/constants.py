@@ -1,5 +1,5 @@
 """Application constants."""
-from app.models.user import UserType, UserStatus
+from app.models.user import UserType, Gender
 
-__all__ = ["UserType", "UserStatus"]
+__all__ = ["UserType", "Gender"]
 

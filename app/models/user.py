@@ -1,6 +1,6 @@
 """User base model."""
 import enum
-from sqlalchemy import Column, Integer, String, Enum, Boolean, DateTime, Index
+from sqlalchemy import Column, String, Enum, Boolean, DateTime, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -12,15 +12,16 @@ class UserType(str, enum.Enum):
 
     CUSTOMER = "CUSTOMER"
     BUSINESS_OWNER = "BUSINESS_OWNER"
+    ADMIN = "ADMIN"
 
 
-class UserStatus(str, enum.Enum):
-    """User status enumeration."""
+class Gender(str, enum.Enum):
+    """Gender enumeration."""
 
-    PENDING = "PENDING"
-    ACTIVE = "ACTIVE"
-    SUSPENDED = "SUSPENDED"
-    DELETED = "DELETED"
+    MALE = "MALE"
+    FEMALE = "FEMALE"
+    OTHER = "OTHER"
+    PREFER_NOT_TO_SAY = "PREFER_NOT_TO_SAY"
 
 
 class User(BaseModel):
@@ -28,14 +29,22 @@ class User(BaseModel):
 
     __tablename__ = "users"
 
+    # Authentication fields
     email = Column(String(255), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(100), nullable=False)
     phone = Column(String(20), unique=True, index=True, nullable=True)
     user_type = Column(Enum(UserType), nullable=False, index=True)
-    status = Column(Enum(UserStatus), default=UserStatus.PENDING, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
     last_login = Column(DateTime(timezone=True), nullable=True)
+
+    # Profile fields
+    address = Column(String(255), nullable=True)
+    city = Column(String(100), nullable=True)
+    state = Column(String(100), nullable=True)
+    country = Column(String(100), nullable=True)
+    picture = Column(String(500), nullable=True)
+    gender = Column(Enum(Gender), nullable=True)
 
     # Relationships
     customer_profile = relationship("Customer", back_populates="user", uselist=False, cascade="all, delete-orphan")
@@ -46,7 +55,6 @@ class User(BaseModel):
         Index("idx_users_email", "email"),
         Index("idx_users_phone", "phone"),
         Index("idx_users_user_type", "user_type"),
-        Index("idx_users_status", "status"),
     )
 
     def __repr__(self) -> str:

@@ -1,5 +1,6 @@
 """Refresh token model."""
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Index
+from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Index
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
 from app.db.base import BaseModel
@@ -10,7 +11,7 @@ class RefreshToken(BaseModel):
 
     __tablename__ = "refresh_tokens"
 
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     token = Column(String(512), nullable=False, unique=True)
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     is_revoked = Column(Boolean, default=False, nullable=False)

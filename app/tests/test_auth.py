@@ -3,7 +3,7 @@ import pytest
 from fastapi import status
 from unittest.mock import patch, MagicMock
 
-from app.models.user import UserType, UserStatus
+from app.models.user import UserType
 from app.core.security import create_access_token, generate_token_data
 
 
@@ -129,8 +129,8 @@ class TestTokenRefresh:
 
     def test_refresh_token_success(self, client, test_user):
         """Test successful token refresh."""
-        # Generate refresh token
-        token_data = generate_token_data(test_user.id, test_user.email, test_user.user_type.value)
+        # Generate refresh token (convert UUID to string)
+        token_data = generate_token_data(str(test_user.id), test_user.email, test_user.user_type.value)
         from app.core.security import create_refresh_token
         refresh_token = create_refresh_token(token_data)
 

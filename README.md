@@ -1,6 +1,34 @@
-# Service Marketplace Backend
+# LeadFlow - Service Marketplace Backend
 
 Production-grade FastAPI backend for a dual-app service marketplace platform connecting Potential Customers with Business Owners.
+
+## 🚀 Quick Start
+
+```bash
+# Install UV (10-100x faster than pip)
+bash setup-uv.sh
+
+# Install dependencies
+uv pip install -r requirements.txt
+
+# Run migrations
+alembic upgrade head
+
+# Start server
+uvicorn app.main:app --reload
+```
+
+**📚 Complete Setup Guide**: See [SETUP_COMPLETE_SUMMARY.md](./SETUP_COMPLETE_SUMMARY.md)
+
+## ✅ Latest Updates (v2.0 - February 2026)
+
+- ✅ **UUID-based IDs** (secure, non-sequential)
+- ✅ **Enhanced Profile Fields** (address, city, state, country, picture, gender)
+- ✅ **ADMIN User Type** added
+- ✅ **UV Package Manager** (10-100x faster than pip)
+- ✅ **PM2 Deployment** for AWS EC2 (production-ready)
+- ✅ **OTP Verification** intact and working
+- ✅ **Production-Ready** Nginx configuration
 
 ## Features
 
@@ -8,6 +36,7 @@ Production-grade FastAPI backend for a dual-app service marketplace platform con
 - JWT-based authentication with access and refresh tokens
 - OTP verification via email (SMTP)
 - PostgreSQL database with SQLAlchemy ORM
+- **UUID-based primary keys** for enhanced security and scalability
 - Redis for OTP storage and session management
 - REST API endpoints for authentication
 - Environment-based configuration (local/production)
@@ -98,6 +127,8 @@ service-marketplace-backend/
    ```bash
    alembic upgrade head
    ```
+   
+   **Note**: The database uses UUIDs for all primary keys. See `UUID_MIGRATION_GUIDE.md` for details.
 
 8. **Run the development server**
    ```bash
@@ -109,6 +140,141 @@ The API will be available at `http://localhost:8000`
 API documentation is available at:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
+
+## Production Deployment (AWS EC2 with PM2)
+
+### Prerequisites
+- AWS EC2 instance (Ubuntu 22.04 LTS recommended)
+- Domain name (optional, for SSL)
+- SSH access to the server
+
+### Deployment Steps
+
+1. **Prepare EC2 instance**
+   ```bash
+   # SSH into your EC2 instance
+   ssh ubuntu@your-ec2-ip
+   
+   # Run the server setup script
+   sudo bash setup-server.sh
+   ```
+   
+   This script installs:
+   - Python 3.11
+   - PostgreSQL 15
+   - Redis
+   - Node.js & PM2
+   - Nginx
+   - Certbot (SSL)
+   - UV (fast package manager)
+
+2. **Copy application files**
+   ```bash
+   # From your local machine
+   scp -r /path/to/leadflow ubuntu@your-ec2-ip:/opt/leadflow
+   
+   # Or clone from git
+   cd /opt/leadflow
+   git clone your-repo-url .
+   ```
+
+3. **Configure environment**
+   ```bash
+   cd /opt/leadflow
+   cp .env.production.example .env.production
+   nano .env.production  # Edit with your actual values
+   ```
+
+4. **Deploy the application**
+   ```bash
+   sudo bash deployment/deploy.sh
+   ```
+   
+   This script will:
+   - Create Python virtual environment
+   - Install dependencies with UV
+   - Run database migrations
+   - Configure Nginx
+   - Start application with PM2
+   - Set up auto-restart on reboot
+
+5. **Configure SSL (optional but recommended)**
+   ```bash
+   sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com
+   ```
+
+### PM2 Management Commands
+
+```bash
+# View application logs
+pm2 logs leadflow-api
+
+# Monitor application
+pm2 monit
+
+# Restart application
+pm2 restart leadflow-api
+
+# Stop application
+pm2 stop leadflow-api
+
+# View status
+pm2 status
+
+# View detailed info
+pm2 info leadflow-api
+
+# Save PM2 process list (auto-restart on reboot)
+pm2 save
+
+# View PM2 startup script
+pm2 startup
+```
+
+### Database Management
+
+```bash
+# Connect to PostgreSQL
+sudo -u postgres psql
+
+# Connect to application database
+sudo -u postgres psql -d service_marketplace
+
+# Create database backup
+pg_dump -U leadflow -h localhost service_marketplace | gzip > backup.sql.gz
+
+# Restore database
+gunzip < backup.sql.gz | psql -U leadflow -h localhost service_marketplace
+```
+
+### Troubleshooting
+
+```bash
+# Check application logs
+pm2 logs leadflow-api --lines 100
+
+# Check Nginx logs
+sudo tail -f /var/log/nginx/error.log
+sudo tail -f /var/log/nginx/access.log
+
+# Check PostgreSQL logs
+sudo tail -f /var/log/postgresql/postgresql-15-main.log
+
+# Check Redis status
+redis-cli ping
+
+# Restart services
+sudo systemctl restart postgresql
+sudo systemctl restart redis-server
+sudo systemctl restart nginx
+pm2 restart leadflow-api
+
+# Check service status
+sudo systemctl status postgresql
+sudo systemctl status redis-server
+sudo systemctl status nginx
+pm2 status
+```
 
 ## Environment Variables
 
@@ -170,7 +336,15 @@ alembic upgrade head
 
 # Rollback migration
 alembic downgrade -1
+
+# Check current migration status
+alembic current
+
+# View migration history
+alembic history
 ```
+
+**Important**: This project uses UUIDs for all primary keys. See `UUID_MIGRATION_GUIDE.md` for migration details and API response format changes.
 
 ## Security Notes
 
