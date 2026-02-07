@@ -1,17 +1,16 @@
 """Dependency injection functions."""
 from typing import Generator, Optional
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db as get_database_session
-from app.core.security import decode_token
+from app.core.security import validate_token
 from app.core.exceptions import UnauthorizedException, AuthenticationException
 from app.models.user import User
-from app.repositories.user_repository import UserRepository
 
-# OAuth2 scheme
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
+# HTTP Bearer scheme for simple token authentication
+security = HTTPBearer()
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -25,15 +24,17 @@ def get_db() -> Generator[Session, None, None]:
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),
+    request: Request = None,
 ) -> User:
     """
-    Dependency to get current authenticated user.
+    Dependency to get current authenticated user via simple token.
 
     Args:
-        token: JWT access token
+        credentials: HTTP Bearer credentials
         db: Database session
+        request: FastAPI request object (optional, for IP tracking)
 
     Returns:
         User: Current authenticated user
@@ -43,27 +44,27 @@ async def get_current_user(
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Invalid or expired token",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    payload = decode_token(token)
-    if payload is None:
-        raise credentials_exception
+    token = credentials.credentials
 
-    user_id_str: Optional[str] = payload.get("sub")
-    if user_id_str is None:
-        raise credentials_exception
+    # Optional: Extract IP and user agent for security validation
+    ip_address = None
+    user_agent = None
+    if request:
+        ip_address = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
 
-    # Convert string UUID to UUID object
-    from uuid import UUID
-    try:
-        user_id = UUID(user_id_str)
-    except (ValueError, TypeError):
-        raise credentials_exception
+    # Validate token and get user
+    user = validate_token(
+        db=db,
+        token=token,
+        check_ip=ip_address,
+        check_user_agent=user_agent,
+    )
 
-    user_repository = UserRepository(db)
-    user = user_repository.get_by_id(user_id)
     if user is None:
         raise credentials_exception
 

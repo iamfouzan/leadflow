@@ -4,7 +4,7 @@ from fastapi import status
 from unittest.mock import patch, MagicMock
 
 from app.models.user import UserType
-from app.core.security import create_access_token, generate_token_data
+from app.core.security import create_access_token
 
 
 class TestRegistration:
@@ -98,7 +98,6 @@ class TestLogin:
         data = response.json()
         assert data["success"] is True
         assert "access_token" in data["data"]
-        assert "refresh_token" in data["data"]
         assert data["data"]["token_type"] == "bearer"
 
     def test_login_wrong_password(self, client, test_user):
@@ -122,25 +121,6 @@ class TestLogin:
         response = client.post("/api/v1/auth/login", json=payload)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
-
-
-class TestTokenRefresh:
-    """Test token refresh."""
-
-    def test_refresh_token_success(self, client, test_user):
-        """Test successful token refresh."""
-        # Generate refresh token (convert UUID to string)
-        token_data = generate_token_data(str(test_user.id), test_user.email, test_user.user_type.value)
-        from app.core.security import create_refresh_token
-        refresh_token = create_refresh_token(token_data)
-
-        payload = {"refresh_token": refresh_token}
-        response = client.post("/api/v1/auth/refresh", json=payload)
-
-        assert response.status_code == status.HTTP_200_OK
-        data = response.json()
-        assert data["success"] is True
-        assert "access_token" in data["data"]
 
 
 class TestHealthCheck:

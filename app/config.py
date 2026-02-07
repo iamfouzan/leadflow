@@ -37,11 +37,9 @@ class Settings(BaseSettings):
     REDIS_URL: str
     REDIS_OTP_DB: int = 1
 
-    # JWT Settings
-    SECRET_KEY: str
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # Authentication Token Settings
+    SECRET_KEY: str  # Keep for potential future use (password reset tokens, etc.)
+    TOKEN_EXPIRE_HOURS: int = 24  # Access token expiration in hours
 
     # OTP Settings
     OTP_LENGTH: int = 6

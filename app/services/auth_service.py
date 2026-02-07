@@ -1,5 +1,5 @@
 """Authentication business logic service."""
-from datetime import timedelta
+from datetime import datetime
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 import logging
@@ -8,7 +8,7 @@ from app.models.user import User, UserType
 from app.repositories.user_repository import UserRepository
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.business_repository import BusinessRepository
-from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, generate_token_data, blacklist_token
+from app.core.security import hash_password, verify_password, create_access_token, revoke_token, revoke_all_user_tokens
 from app.core.exceptions import ValidationException, AuthenticationException, ResourceNotFoundException
 from app.schemas.auth import RegisterRequest, LoginRequest
 from app.models.customer import Customer
@@ -99,15 +99,22 @@ class AuthService:
         logger.info(f"User registered: {user.email} ({user.user_type})")
         return user
 
-    def login(self, login_data: LoginRequest) -> Dict[str, Any]:
+    def login(
+        self,
+        login_data: LoginRequest,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Login user and generate JWT tokens.
+        Login user and generate access token.
 
         Args:
             login_data: Login request data
+            ip_address: Client IP address (optional, for security tracking)
+            user_agent: Client user agent (optional, for security tracking)
 
         Returns:
-            Dictionary with user and tokens
+            Dictionary with user and token
 
         Raises:
             AuthenticationException: If credentials are invalid
@@ -121,15 +128,16 @@ class AuthService:
         if not verify_password(login_data.password, user.password_hash):
             raise AuthenticationException("Invalid email or password")
 
-        # Generate token data (convert UUID to string)
-        token_data = generate_token_data(str(user.id), user.email, user.user_type.value)
-
-        # Create tokens
-        access_token = create_access_token(token_data)
-        refresh_token = create_refresh_token(token_data)
+        # Create access token (stored in database with hash)
+        access_token = create_access_token(
+            db=self.db,
+            user_id=user.id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            expires_hours=24,  # Token valid for 24 hours
+        )
 
         # Update last login
-        from datetime import datetime
         user.last_login = datetime.utcnow()
         self.db.commit()
         self.db.refresh(user)
@@ -139,73 +147,36 @@ class AuthService:
         return {
             "user": user,
             "access_token": access_token,
-            "refresh_token": refresh_token,
             "token_type": "bearer",
         }
 
     def logout(self, token: str) -> bool:
         """
-        Logout user by blacklisting token.
+        Logout user by revoking token.
 
         Args:
-            token: JWT access token to blacklist
+            token: Access token to revoke
 
         Returns:
             True if logout successful
         """
-        blacklist_token(token)
+        revoked = revoke_token(self.db, token)
         logger.info("User logged out")
-        return True
+        return revoked
 
-    def refresh_access_token(self, refresh_token: str) -> Dict[str, str]:
+    def logout_all_devices(self, user_id) -> int:
         """
-        Refresh access token using refresh token.
+        Logout user from all devices by revoking all tokens.
 
         Args:
-            refresh_token: JWT refresh token
+            user_id: User ID (UUID)
 
         Returns:
-            Dictionary with new access token
-
-        Raises:
-            AuthenticationException: If refresh token is invalid
+            Number of tokens revoked
         """
-        from app.core.security import decode_token
-
-        # Decode refresh token
-        payload = decode_token(refresh_token)
-        if not payload:
-            raise AuthenticationException("Invalid refresh token")
-
-        # Check token type
-        if payload.get("type") != "refresh":
-            raise AuthenticationException("Invalid token type")
-
-        # Get user
-        user_id_str = payload.get("sub")
-        if not user_id_str:
-            raise AuthenticationException("Invalid token payload")
-
-        from uuid import UUID
-        try:
-            user_id = UUID(user_id_str)
-        except (ValueError, TypeError):
-            raise AuthenticationException("Invalid user ID in token")
-
-        user = self.user_repository.get_by_id(user_id)
-        if not user:
-            raise AuthenticationException("User not found")
-
-        # Generate new access token (convert UUID to string)
-        token_data = generate_token_data(str(user.id), user.email, user.user_type.value)
-        access_token = create_access_token(token_data)
-
-        logger.info(f"Access token refreshed for user: {user.email}")
-
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-        }
+        count = revoke_all_user_tokens(self.db, user_id)
+        logger.info(f"User logged out from all devices: {count} sessions ended")
+        return count
 
     def reset_password(self, user_id, new_password: str) -> bool:
         """

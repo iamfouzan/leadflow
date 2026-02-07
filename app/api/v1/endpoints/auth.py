@@ -11,7 +11,6 @@ from app.schemas.auth import (
     OTPRequest,
     OTPVerifyRequest,
     TokenResponse,
-    RefreshTokenRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
 )
@@ -26,7 +25,6 @@ from app.core.exceptions import (
     ResourceNotFoundException,
     OTPException,
 )
-from app.core.security import decode_token, blacklist_token
 from app.config import settings
 
 router = APIRouter()
@@ -167,6 +165,7 @@ async def verify_otp(
 )
 async def login(
     login_data: LoginRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> SuccessResponse[TokenResponse]:
     """
@@ -174,54 +173,30 @@ async def login(
 
     Args:
         login_data: Login request data
+        request: FastAPI request object (for IP and user agent tracking)
         db: Database session
 
     Returns:
-        Success response with JWT tokens
+        Success response with access token
     """
     auth_service = AuthService(db)
     try:
-        result = auth_service.login(login_data)
+        # Extract IP and user agent for security tracking
+        ip_address = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+
+        result = auth_service.login(
+            login_data=login_data,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
         return SuccessResponse(
             data=TokenResponse(
                 access_token=result["access_token"],
-                refresh_token=result["refresh_token"],
                 token_type=result["token_type"],
             ),
             message="Login successful",
-        )
-    except AuthenticationException as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
-        )
-
-
-@router.post(
-    "/refresh",
-    response_model=SuccessResponse[dict],
-    status_code=status.HTTP_200_OK,
-)
-async def refresh_token(
-    refresh_request: RefreshTokenRequest,
-    db: Session = Depends(get_db),
-) -> SuccessResponse[dict]:
-    """
-    Refresh access token using refresh token.
-
-    Args:
-        refresh_request: Refresh token request data
-        db: Database session
-
-    Returns:
-        Success response with new access token
-    """
-    auth_service = AuthService(db)
-    try:
-        result = auth_service.refresh_access_token(refresh_request.refresh_token)
-        return SuccessResponse(
-            data=result,
-            message="Token refreshed successfully",
         )
     except AuthenticationException as e:
         raise HTTPException(

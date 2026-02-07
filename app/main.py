@@ -18,7 +18,6 @@ from app.core.exceptions import (
     OTPException,
 )
 from app.core.middleware import TimingMiddleware, RateLimitMiddleware
-from app.core.security import set_redis_client
 from app.api.v1.router import api_router
 from app.db.session import SessionLocal, engine
 from app.db.base import Base
@@ -42,12 +41,11 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting application...")
 
-    # Initialize Redis connection
+    # Initialize Redis connection (for OTP storage and rate limiting)
     global redis_client
     try:
         redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
         redis_client.ping()
-        set_redis_client(redis_client)
         logger.info("Redis connection established")
     except Exception as e:
         logger.error(f"Failed to connect to Redis: {str(e)}")
@@ -58,7 +56,7 @@ async def lifespan(app: FastAPI):
     # Store Redis client in app state for middleware access
     app.state.redis_client = redis_client
 
-    # Set Redis client in auth endpoints module
+    # Set Redis client in auth endpoints module (for OTP)
     import app.api.v1.endpoints.auth as auth_module
     auth_module.redis_client = redis_client
 

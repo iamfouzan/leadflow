@@ -1,12 +1,13 @@
-"""JWT, password hashing, and token management."""
+"""Password hashing and simple token management."""
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-from jose import JWTError, jwt
+from typing import Optional
 from passlib.context import CryptContext
 import bcrypt
-from redis import Redis
 import secrets
+import hashlib
 import logging
+from uuid import UUID
+from sqlalchemy.orm import Session
 
 from app.config import settings
 
@@ -24,15 +25,6 @@ pwd_context = CryptContext(
 # Passlib has compatibility issues with bcrypt 5.0.0 during bug detection
 # We'll use bcrypt library directly for hashing, passlib can still be used for verification
 USE_DIRECT_BCRYPT = True  # Set to True to bypass passlib's bug detection issues
-
-# Redis client (will be initialized in main.py)
-redis_client: Optional[Redis] = None
-
-
-def set_redis_client(client: Redis) -> None:
-    """Set Redis client for token blacklisting."""
-    global redis_client
-    redis_client = client
 
 
 def hash_password(password: str) -> str:
@@ -119,130 +111,229 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
-def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+def generate_simple_token() -> str:
     """
-    Create JWT access token.
-
-    Args:
-        data: Token payload data
-        expires_delta: Optional expiry time delta
+    Generate cryptographically secure random token.
 
     Returns:
-        Encoded JWT token string
+        Random token string (64 characters)
     """
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    return f"tok_{secrets.token_urlsafe(48)}"
 
-    # Generate unique token ID
-    jti = secrets.token_urlsafe(32)
 
-    to_encode.update(
-        {
-            "exp": expire,
-            "iat": datetime.utcnow(),
-            "jti": jti,
-        }
+def hash_token(token: str) -> str:
+    """
+    Hash token using SHA256 for secure storage.
+
+    Args:
+        token: Plain token string
+
+    Returns:
+        SHA256 hash of token (hex string)
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def create_access_token(
+    db: Session,
+    user_id: UUID,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    expires_hours: int = 24,
+) -> str:
+    """
+    Create and store access token in database.
+
+    Args:
+        db: Database session
+        user_id: User ID (UUID)
+        ip_address: Client IP address (optional, for security tracking)
+        user_agent: Client user agent (optional, for security tracking)
+        expires_hours: Token expiration in hours (default 24)
+
+    Returns:
+        Plain token string (to send to client)
+    """
+    from app.models.access_token import AccessToken
+
+    # Generate plain token (client will receive this)
+    plain_token = generate_simple_token()
+
+    # Hash token for database storage (security best practice)
+    token_hash = hash_token(plain_token)
+
+    # Calculate expiration
+    expires_at = datetime.utcnow() + timedelta(hours=expires_hours)
+
+    # Create token record
+    access_token = AccessToken(
+        user_id=user_id,
+        token_hash=token_hash,
+        ip_address=ip_address[:45] if ip_address else None,  # Truncate to fit column
+        user_agent=user_agent[:512] if user_agent else None,  # Truncate to fit column
+        expires_at=expires_at,
     )
 
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
-    return encoded_jwt
+    db.add(access_token)
+    db.commit()
+    db.refresh(access_token)
+
+    logger.info(f"Access token created for user {user_id}, expires at {expires_at}")
+
+    return plain_token  # Return plain token to send to client
 
 
-def create_refresh_token(data: Dict[str, Any]) -> str:
+def validate_token(
+    db: Session,
+    token: str,
+    check_ip: Optional[str] = None,
+    check_user_agent: Optional[str] = None,
+):
     """
-    Create JWT refresh token.
+    Validate token and return associated user.
 
     Args:
-        data: Token payload data
+        db: Database session
+        token: Plain token string from client
+        check_ip: Optional IP to validate against stored IP
+        check_user_agent: Optional user agent to validate
 
     Returns:
-        Encoded JWT refresh token string
+        User object if token is valid, None otherwise
     """
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    from app.models.access_token import AccessToken
+    from app.models.user import User
 
-    # Generate unique token ID
-    jti = secrets.token_urlsafe(32)
+    # Hash the incoming token to compare with database
+    token_hash = hash_token(token)
 
-    to_encode.update(
-        {
-            "exp": expire,
-            "iat": datetime.utcnow(),
-            "jti": jti,
-            "type": "refresh",
-        }
+    # Query token from database
+    token_record = (
+        db.query(AccessToken)
+        .filter(
+            AccessToken.token_hash == token_hash,
+            AccessToken.expires_at > datetime.utcnow(),  # Check expiration
+        )
+        .first()
     )
 
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
-    return encoded_jwt
-
-
-def decode_token(token: str) -> Optional[Dict[str, Any]]:
-    """
-    Decode and validate JWT token.
-
-    Args:
-        token: JWT token string
-
-    Returns:
-        Decoded token payload or None if invalid
-    """
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-
-        # Check if token is blacklisted
-        if redis_client:
-            jti = payload.get("jti")
-            if jti and redis_client.exists(f"blacklisted_token:{jti}"):
-                return None
-
-        return payload
-    except JWTError:
+    if not token_record:
+        logger.warning(f"Invalid or expired token attempted")
         return None
 
+    # Optional: Check IP address for suspicious activity
+    if check_ip and token_record.ip_address:
+        if token_record.ip_address != check_ip:
+            logger.warning(
+                f"Token used from different IP. "
+                f"Original: {token_record.ip_address}, Current: {check_ip}"
+            )
+            # Don't block, but log for security monitoring
+            # In production, you might want to send alert email
 
-def blacklist_token(token: str) -> None:
+    # Get and return user
+    user = db.query(User).filter(User.id == token_record.user_id).first()
+
+    if user:
+        logger.debug(f"Token validated for user {user.id}")
+
+    return user
+
+
+def revoke_token(db: Session, token: str) -> bool:
     """
-    Blacklist a token by storing its JTI in Redis.
+    Revoke (delete) a token from database.
 
     Args:
-        token: JWT token string to blacklist
-    """
-    if not redis_client:
-        return
-
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        jti = payload.get("jti")
-        exp = payload.get("exp")
-
-        if jti and exp:
-            # Store blacklisted token until expiry
-            ttl = exp - int(datetime.utcnow().timestamp())
-            if ttl > 0:
-                redis_client.setex(f"blacklisted_token:{jti}", ttl, "1")
-    except JWTError:
-        pass
-
-
-def generate_token_data(user_id: str, email: str, user_type: str) -> Dict[str, Any]:
-    """
-    Generate token payload data.
-
-    Args:
-        user_id: User ID as string (UUID converted to string)
-        email: User email
-        user_type: User type (CUSTOMER or BUSINESS_OWNER)
+        db: Database session
+        token: Plain token string
 
     Returns:
-        Token payload dictionary
+        True if token was revoked, False if not found
     """
-    return {
-        "sub": user_id,
-        "email": email,
-        "user_type": user_type,
-    }
+    from app.models.access_token import AccessToken
+
+    token_hash = hash_token(token)
+
+    result = db.query(AccessToken).filter(AccessToken.token_hash == token_hash).delete()
+    db.commit()
+
+    if result > 0:
+        logger.info(f"Token revoked successfully")
+        return True
+
+    logger.warning(f"Attempted to revoke non-existent token")
+    return False
+
+
+def revoke_all_user_tokens(db: Session, user_id: UUID) -> int:
+    """
+    Revoke all tokens for a specific user.
+
+    Useful for logout from all devices or security incidents.
+
+    Args:
+        db: Database session
+        user_id: User ID (UUID)
+
+    Returns:
+        Number of tokens revoked
+    """
+    from app.models.access_token import AccessToken
+
+    count = db.query(AccessToken).filter(AccessToken.user_id == user_id).delete()
+    db.commit()
+
+    logger.info(f"Revoked {count} tokens for user {user_id}")
+    return count
+
+
+def cleanup_expired_tokens(db: Session) -> int:
+    """
+    Delete all expired tokens from database.
+
+    Should be run periodically (e.g., daily cron job).
+
+    Args:
+        db: Database session
+
+    Returns:
+        Number of tokens deleted
+    """
+    from app.models.access_token import AccessToken
+
+    count = (
+        db.query(AccessToken)
+        .filter(AccessToken.expires_at < datetime.utcnow())
+        .delete()
+    )
+    db.commit()
+
+    logger.info(f"Cleaned up {count} expired tokens")
+    return count
+
+
+def get_active_sessions(db: Session, user_id: UUID) -> int:
+    """
+    Get count of active sessions for a user.
+
+    Args:
+        db: Database session
+        user_id: User ID (UUID)
+
+    Returns:
+        Number of active (non-expired) tokens
+    """
+    from app.models.access_token import AccessToken
+
+    count = (
+        db.query(AccessToken)
+        .filter(
+            AccessToken.user_id == user_id,
+            AccessToken.expires_at > datetime.utcnow(),
+        )
+        .count()
+    )
+
+    return count
 

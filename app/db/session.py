@@ -61,7 +61,7 @@ def init_db() -> None:
         customer,
         business,
         otp,
-        refresh_token,
+        access_token,
     )
 
     Base.metadata.create_all(bind=engine)

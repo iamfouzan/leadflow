@@ -5,7 +5,6 @@ from app.schemas.auth import (
     OTPRequest,
     OTPVerifyRequest,
     TokenResponse,
-    RefreshTokenRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
 )
@@ -21,7 +20,6 @@ __all__ = [
     "OTPRequest",
     "OTPVerifyRequest",
     "TokenResponse",
-    "RefreshTokenRequest",
     "ForgotPasswordRequest",
     "ResetPasswordRequest",
     "UserBase",
